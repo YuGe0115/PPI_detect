@@ -34,6 +34,69 @@ class ProteinFeatureExtractor:
         self.charged = 'DEKR'
         self.aromatic = 'FWY'
         
+    def validate_sequence(self, sequence):
+        """验证蛋白质序列的有效性
+        
+        Args:
+            sequence (str): 蛋白质序列
+            
+        Returns:
+            tuple: (is_valid, error_message)
+        """
+        if not sequence:
+            return False, "序列不能为空"
+            
+        if len(sequence) < 10:
+            return False, "序列长度过短，至少需要10个氨基酸"
+            
+        if len(sequence) > 10000:
+            return False, "序列长度过长，最多支持10000个氨基酸"
+            
+        # 转换为大写并检查字符
+        sequence = sequence.upper().strip()
+        
+        # 检查是否包含非标准氨基酸
+        valid_chars = set(self.amino_acids + 'XBZ*-')  # X=未知, B=Asx, Z=Glx, *=终止, -=gap
+        invalid_chars = set(sequence) - valid_chars
+        
+        if invalid_chars:
+            return False, f"序列包含无效字符: {', '.join(sorted(invalid_chars))}"
+            
+        # 检查未知氨基酸比例
+        unknown_count = sequence.count('X')
+        if unknown_count / len(sequence) > 0.1:  # 超过10%的未知氨基酸
+            return False, f"未知氨基酸(X)比例过高: {unknown_count/len(sequence)*100:.1f}%"
+            
+        # 检查是否全是同一个氨基酸（可能的错误序列）
+        if len(set(sequence.replace('X', '').replace('-', ''))) <= 1:
+            return False, "序列可能无效：几乎全是同一个氨基酸"
+            
+        return True, "序列有效"
+        
+    def clean_sequence(self, sequence):
+        """清理和标准化蛋白质序列
+        
+        Args:
+            sequence (str): 原始蛋白质序列
+            
+        Returns:
+            str: 清理后的序列
+        """
+        if not sequence:
+            return ""
+            
+        # 转换为大写，移除空白字符和数字
+        sequence = ''.join(c.upper() for c in sequence if c.isalpha())
+        
+        # 移除gap字符
+        sequence = sequence.replace('-', '')
+        
+        # 替换非标准氨基酸
+        # B (Asx) -> D, Z (Glx) -> E
+        sequence = sequence.replace('B', 'D').replace('Z', 'E')
+        
+        return sequence
+        
     def amino_acid_composition(self, sequence):
         """Calculate amino acid composition"""
         sequence = sequence.upper()
@@ -106,10 +169,18 @@ class ProteinFeatureExtractor:
     
     def extract_features(self, sequence):
         """Extract all features from a protein sequence"""
+        # 验证和清理序列
+        is_valid, error_msg = self.validate_sequence(sequence)
+        if not is_valid:
+            raise ValueError(f"序列验证失败: {error_msg}")
+            
+        # 清理序列
+        cleaned_sequence = self.clean_sequence(sequence)
+        
         features = {}
-        features.update(self.amino_acid_composition(sequence))
-        features.update(self.physicochemical_properties(sequence))
-        features.update(self.structural_features(sequence))
+        features.update(self.amino_acid_composition(cleaned_sequence))
+        features.update(self.physicochemical_properties(cleaned_sequence))
+        features.update(self.structural_features(cleaned_sequence))
         
         return features
 
@@ -242,20 +313,23 @@ class PPIAffinityPredictor:
         """Predict binding affinity between two protein sequences"""
         if self.model is None:
             raise ValueError("Model not trained. Please train the model first.")
-        
-        # Extract features
-        features = self.extract_ppi_features(seq1, seq2)
-        
+
+        try:
+            # Extract features (包含序列验证)
+            features = self.extract_ppi_features(seq1, seq2)
+        except ValueError as e:
+            raise ValueError(f"序列处理错误: {str(e)}")
+
         # Convert to DataFrame and ensure feature order
         df = pd.DataFrame([features])
         df = df.reindex(columns=self.feature_names, fill_value=0)
-        
+
         # Scale features
         X = self.scaler.transform(df.values)
-        
+
         # Predict
         affinity = self.model.predict(X)[0]
-        
+
         return affinity
     
     def save_model(self, filepath):
@@ -365,8 +439,14 @@ def main():
                     print("- Moderate binding")
                 else:
                     print("- Weak binding")
+            except ValueError as e:
+                if "序列" in str(e):
+                    print(f"序列验证错误: {e}")
+                    print("提示: 请确保序列只包含标准氨基酸字母，长度在10-10000之间")
+                else:
+                    print(f"预测错误: {e}")
             except Exception as e:
-                print(f"Error predicting affinity: {e}")
+                print(f"未知错误: {e}")
     
     # Command line mode
     elif args.seq1 and args.seq2:
